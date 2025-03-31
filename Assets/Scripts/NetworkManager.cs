@@ -44,7 +44,9 @@ public class NetworkManager : MonoBehaviourPunCallbacks {
     [SerializeField]
     private GameObject leaderboardEntryPrefab;
     [SerializeField]
-    private float gameDuration = 300f;
+    private Dropdown timeSelectionDropdown;
+    [SerializeField]
+    private float[] timeOptions = { 180f, 300f, 600f }; // 3, 5, 10 minutes
 
     private GameObject player;
     private Queue<string> messages;
@@ -70,30 +72,45 @@ public class NetworkManager : MonoBehaviourPunCallbacks {
     /// any of the Update methods is called the first time.
     /// </summary>
     void Start() {
-        messages = new Queue<string> (messageCount);
+        messages = new Queue<string>(messageCount);
         if (PlayerPrefs.HasKey(nickNamePrefKey)) {
             username.text = PlayerPrefs.GetString(nickNamePrefKey);
         }
+        
         PhotonNetwork.AutomaticallySyncScene = true;
         PhotonNetwork.ConnectUsingSettings();
         connectionText.text = "Connecting to lobby...";
+        
+        // Initialize UI
         scoreText.text = "Score: 0";
         killsText.text = "Kills: 0";
         
-        // Initialize timer
-        currentGameTime = gameDuration;
-        timerText.text = FormatTime(currentGameTime);
-        leaderboardPanel.SetActive(false);
+        // Setup time selection dropdown
+        SetupTimeDropdown();
+        
+        // Initialize timer with default time (5 minutes)
+        currentGameTime = timeOptions[1];
+        if (timerText != null) {
+            timerText.text = FormatTime(currentGameTime);
+        }
+        
+        if (leaderboardPanel != null) {
+            leaderboardPanel.SetActive(false);
+        }
     }
 
-    void Update() {
-        if (isGameActive && PhotonNetwork.IsMasterClient) {
-            currentGameTime -= Time.deltaTime;
-            photonView.RPC("SyncTimer", RpcTarget.All, currentGameTime);
-
-            if (currentGameTime <= 0) {
-                photonView.RPC("EndGame", RpcTarget.All);
+    void SetupTimeDropdown() {
+        if (timeSelectionDropdown != null) {
+            timeSelectionDropdown.ClearOptions();
+            List<string> options = new List<string>();
+            
+            foreach (float time in timeOptions) {
+                int minutes = Mathf.FloorToInt(time / 60f);
+                options.Add($"{minutes} Minutes");
             }
+            
+            timeSelectionDropdown.AddOptions(options);
+            timeSelectionDropdown.value = 1; // Default to second option (5 minutes)
         }
     }
 
@@ -109,7 +126,17 @@ public class NetworkManager : MonoBehaviourPunCallbacks {
     /// </summary>
     /// <param name="cause">DisconnectCause data associated with this disconnect.</param>
     public override void OnDisconnected(DisconnectCause cause) {
-        connectionText.text = cause.ToString();
+        // Add null check before accessing UI elements
+        if (connectionText != null) {
+            connectionText.text = cause.ToString();
+        }
+        
+        // Reset game state
+        isGameActive = false;
+        
+        // Show cursor in case of disconnect during game
+        Cursor.lockState = CursorLockMode.None;
+        Cursor.visible = true;
     }
 
     /// <summary>
@@ -139,10 +166,16 @@ public class NetworkManager : MonoBehaviourPunCallbacks {
         connectionText.text = "Joining room...";
         PhotonNetwork.LocalPlayer.NickName = username.text;
         PlayerPrefs.SetString(nickNamePrefKey, username.text);
+        
         RoomOptions roomOptions = new RoomOptions() {
             IsVisible = true,
-            MaxPlayers = 8
+            MaxPlayers = 8,
+            CustomRoomProperties = new ExitGames.Client.Photon.Hashtable()
+            {
+                {"GameTime", timeOptions[timeSelectionDropdown.value]}
+            }
         };
+
         if (PhotonNetwork.IsConnectedAndReady) {
             PhotonNetwork.JoinOrCreateRoom(roomName.text, roomOptions, TypedLobby.Default);
         } else {
@@ -157,13 +190,20 @@ public class NetworkManager : MonoBehaviourPunCallbacks {
         connectionText.text = "";
         Cursor.lockState = CursorLockMode.Locked;
         Cursor.visible = false;
-        Respawn(0.0f);
         
+        // Get the game time from room properties
+        if (PhotonNetwork.CurrentRoom.CustomProperties.ContainsKey("GameTime")) {
+            float gameTime = (float)PhotonNetwork.CurrentRoom.CustomProperties["GameTime"];
+            currentGameTime = gameTime;
+        }
+        
+        // Start the game timer if master client
         if (PhotonNetwork.IsMasterClient) {
             isGameActive = true;
-            currentGameTime = gameDuration;
             photonView.RPC("SyncTimer", RpcTarget.All, currentGameTime);
         }
+        
+        Respawn(0.0f);
     }
 
     /// <summary>
@@ -250,10 +290,10 @@ public class NetworkManager : MonoBehaviourPunCallbacks {
         playerStats[playerName].Score = score;
         playerStats[playerName].Kills = kills;
 
-        // Update UI if this is the local player
+        // Update UI if this is the local player and UI elements exist
         if (playerName == PhotonNetwork.LocalPlayer.NickName) {
-            scoreText.text = "Score: " + score;
-            killsText.text = "Kills: " + kills;
+            if (scoreText != null) scoreText.text = "Score: " + score;
+            if (killsText != null) killsText.text = "Kills: " + kills;
         }
     }
 
@@ -287,13 +327,30 @@ public class NetworkManager : MonoBehaviourPunCallbacks {
             playerStats[playerName].Kills);
     }
 
+    void Update() {
+        if (isGameActive && PhotonNetwork.IsMasterClient) {
+            if (currentGameTime > 0) {
+                currentGameTime -= Time.deltaTime;
+                photonView.RPC("SyncTimer", RpcTarget.All, currentGameTime);
+
+                if (currentGameTime <= 0) {
+                    currentGameTime = 0;
+                    photonView.RPC("EndGame", RpcTarget.All);
+                }
+            }
+        }
+    }
+
     [PunRPC]
     void SyncTimer(float time) {
         currentGameTime = time;
-        timerText.text = FormatTime(currentGameTime);
+        if (timerText != null) {
+            timerText.text = FormatTime(currentGameTime);
+        }
     }
 
     string FormatTime(float timeInSeconds) {
+        timeInSeconds = Mathf.Max(0, timeInSeconds); // Ensure time doesn't go negative
         int minutes = Mathf.FloorToInt(timeInSeconds / 60f);
         int seconds = Mathf.FloorToInt(timeInSeconds % 60f);
         return string.Format("{0:00}:{1:00}", minutes, seconds);
@@ -305,26 +362,100 @@ public class NetworkManager : MonoBehaviourPunCallbacks {
         
         // Disable player controls
         if (player != null) {
-            player.GetComponent<PlayerHealth>().enabled = false;
-            player.GetComponent<PlayerNetworkMover>().enabled = false;
+            PlayerHealth playerHealth = player.GetComponent<PlayerHealth>();
+            if (playerHealth != null) {
+                playerHealth.enabled = false;
+            }
+            
+            PlayerNetworkMover playerMover = player.GetComponent<PlayerNetworkMover>();
+            if (playerMover != null) {
+                playerMover.enabled = false;
+            }
         }
 
-        // Show cursor
-        Cursor.lockState = CursorLockMode.None;
+        // Ensure cursor is visible and can interact with UI
         Cursor.visible = true;
+        Cursor.lockState = CursorLockMode.None;
 
-        // Show leaderboard
+        // Show leaderboard with slight delay to ensure UI setup
+        StartCoroutine(ShowLeaderboardDelayed());
+    }
+
+    private IEnumerator ShowLeaderboardDelayed() {
+        yield return new WaitForSeconds(0.1f); // Small delay to ensure proper setup
         ShowLeaderboard();
     }
 
     void ShowLeaderboard() {
+        if (leaderboardPanel == null || leaderboardContent == null) return;
+
         // Clear existing entries
         foreach (Transform child in leaderboardContent) {
-            Destroy(child.gameObject);
+            if (child != null) {
+                Destroy(child.gameObject);
+            }
+        }
+
+        // Sort players by score and kills
+        var sortedPlayers = playerStats.OrderByDescending(p => p.Value.Score)
+                                     .ThenByDescending(p => p.Value.Kills)
+                                     .ToList();
+
+        // Create leaderboard entries
+        foreach (var playerStat in sortedPlayers) {
+            GameObject entry = Instantiate(leaderboardEntryPrefab, leaderboardContent);
+            LeaderboardEntry entryScript = entry.GetComponent<LeaderboardEntry>();
+            entryScript.SetStats(
+                playerStat.Key,
+                playerStat.Value.Score,
+                playerStat.Value.Kills
+            );
+        }
+
+        // Ensure the panel is visible and in front
+        leaderboardPanel.SetActive(true);
+        if (leaderboardPanel.GetComponent<Canvas>() != null) {
+            leaderboardPanel.GetComponent<Canvas>().sortingOrder = 999;
+        }
+    }
+
+    // Add method to reset game timer
+    public void ResetGameTimer() {
+        if (PhotonNetwork.IsMasterClient) {
+            currentGameTime = timeOptions[1];
+            isGameActive = true;
+            photonView.RPC("SyncTimer", RpcTarget.All, currentGameTime);
+        }
+    }
+
+    // Add method to pause/resume timer
+    public void SetGameActive(bool active) {
+        if (PhotonNetwork.IsMasterClient) {
+            isGameActive = active;
+            photonView.RPC("SyncGameState", RpcTarget.All, active);
+        }
+    }
+
+    [PunRPC]
+    void SyncGameState(bool active) {
+        isGameActive = active;
+    }
+
+    [PunRPC]
+    void ShowFinalLeaderboard() {
+        if (leaderboardContent == null || leaderboardPanel == null) return;
+
+        // Clear existing entries
+        foreach (Transform child in leaderboardContent) {
+            if (child != null) {
+                Destroy(child.gameObject);
+            }
         }
 
         // Sort players by score
-        var sortedPlayers = playerStats.OrderByDescending(p => p.Value.Score).ToList();
+        var sortedPlayers = playerStats.OrderByDescending(p => p.Value.Score)
+                                     .ThenByDescending(p => p.Value.Kills)
+                                     .ToList();
 
         // Create leaderboard entries
         foreach (var playerStat in sortedPlayers) {
@@ -340,10 +471,56 @@ public class NetworkManager : MonoBehaviourPunCallbacks {
         leaderboardPanel.SetActive(true);
     }
 
-    // Add button callback for returning to lobby
     public void ReturnToLobby() {
-        PhotonNetwork.LeaveRoom();
-        SceneManager.LoadScene("LobbyScene"); // Make sure you have this scene in build settings
+        // Clean up before leaving
+        if (leaderboardPanel != null) {
+            leaderboardPanel.SetActive(false);
+        }
+        
+        if (PhotonNetwork.IsConnected) {
+            PhotonNetwork.LeaveRoom();
+        }
+        
+        SceneManager.LoadScene("LobbyScene");
+    }
+
+    // Add method to safely set UI text
+    private void SafeSetText(Text textComponent, string message) {
+        if (textComponent != null) {
+            textComponent.text = message;
+        }
+    }
+
+    // Add method to check if UI is valid
+    private bool IsUIValid() {
+        return connectionText != null && 
+               scoreText != null && 
+               killsText != null && 
+               timerText != null && 
+               leaderboardPanel != null && 
+               leaderboardContent != null;
+    }
+
+    // Add OnDestroy to clean up
+    void OnDestroy() {
+        // Clean up references
+        connectionText = null;
+        scoreText = null;
+        killsText = null;
+        timerText = null;
+        leaderboardPanel = null;
+        leaderboardContent = null;
+    }
+
+    // Add method to handle room property updates
+    public override void OnRoomPropertiesUpdate(ExitGames.Client.Photon.Hashtable propertiesThatChanged) {
+        if (propertiesThatChanged.ContainsKey("GameTime")) {
+            float newTime = (float)propertiesThatChanged["GameTime"];
+            currentGameTime = newTime;
+            if (timerText != null) {
+                timerText.text = FormatTime(currentGameTime);
+            }
+        }
     }
 
 }
