@@ -45,12 +45,19 @@ public class PlayerHealth : MonoBehaviourPunCallbacks, IPunObservable {
     private bool isDead;
     private bool isSinking;
     private bool damaged;
+    private NetworkManager networkManager;
 
     /// <summary>
     /// Start is called on the frame when a script is enabled just before
     /// any of the Update methods is called the first time.
     /// </summary>
     void Start() {
+        // Find the NetworkManager in the scene
+        networkManager = FindObjectOfType<NetworkManager>();
+        if (networkManager == null) {
+            Debug.LogError("NetworkManager not found in the scene!");
+        }
+        
         fpController = GetComponent<FirstPersonController>();
         ikControl = GetComponentInChildren<IKControl>();
         damageImage = GameObject.FindGameObjectWithTag("Screen").transform.Find("DamageImage").GetComponent<Image>();
@@ -110,29 +117,37 @@ public class PlayerHealth : MonoBehaviourPunCallbacks, IPunObservable {
         isDead = true;
         ikControl.enabled = false;
         nameTag.gameObject.SetActive(false);
+        
         if (photonView.IsMine) {
             fpController.enabled = false;
             animator.SetTrigger("IsDead");
             AddMessageEvent(PhotonNetwork.LocalPlayer.NickName + " was killed by " + enemyName + "!");
             RespawnEvent(respawnTime);
             StartCoroutine("DestoryPlayer", respawnTime);
-        }
-        playerAudio.clip = deathClip;
-        playerAudio.Play();
-        StartCoroutine("StartSinking", sinkTime);
-
-        // Find the killer's NetworkManager and update their stats
-        if (PhotonNetwork.IsMasterClient) {
+            
+            // Reset kill streak for the player who died
+            if (networkManager != null) {
+                networkManager.ResetKillStreak(PhotonNetwork.LocalPlayer.NickName);
+            }
+            
+            // Update killer's stats
             GameObject[] players = GameObject.FindGameObjectsWithTag("Player");
-            foreach (GameObject player in players) {
-                PlayerNetworkMover mover = player.GetComponent<PlayerNetworkMover>();
-                if (mover.photonView.Owner.NickName == enemyName) {
-                    player.GetComponent<NetworkManager>().AddKill();
-                    player.GetComponent<NetworkManager>().AddScore(10); // Add 10 points for a kill
-                    break;
+            foreach (GameObject playerObj in players) {
+                PhotonView pv = playerObj.GetComponent<PhotonView>();
+                if (pv != null && pv.Owner != null && pv.Owner.NickName == enemyName) {
+                    // Found the killer's object
+                    if (networkManager != null) {
+                        // Call AddKill on the killer's NetworkManager instance
+                        networkManager.photonView.RPC("AddKill_RPC", RpcTarget.All, enemyName);
+                        break;
+                    }
                 }
             }
         }
+        
+        playerAudio.clip = deathClip;
+        playerAudio.Play();
+        StartCoroutine("StartSinking", sinkTime);
     }
 
     /// <summary>

@@ -55,6 +55,7 @@ public class NetworkManager : MonoBehaviourPunCallbacks {
     private Dictionary<string, PlayerStats> playerStats = new Dictionary<string, PlayerStats>();
     private float currentGameTime;
     private bool isGameActive = false;
+    private Dictionary<string, int> killStreaks = new Dictionary<string, int>();
 
     // Add this class to track player statistics
     private class PlayerStats {
@@ -97,6 +98,13 @@ public class NetworkManager : MonoBehaviourPunCallbacks {
         if (leaderboardPanel != null) {
             leaderboardPanel.SetActive(false);
         }
+        
+        // Initialize player stats
+        InitializePlayerStats();
+        
+        // Make sure UI is initialized with zero values
+        if (scoreText != null) scoreText.text = "Score: 0";
+        if (killsText != null) killsText.text = "Kills: 0";
     }
 
     void SetupTimeDropdown() {
@@ -204,6 +212,9 @@ public class NetworkManager : MonoBehaviourPunCallbacks {
         }
         
         Respawn(0.0f);
+        
+        // Initialize stats when joining room
+        InitializePlayerStats();
     }
 
     /// <summary>
@@ -232,18 +243,11 @@ public class NetworkManager : MonoBehaviourPunCallbacks {
         playerHealth.RespawnEvent += Respawn;
         playerHealth.AddMessageEvent += AddMessage;
         
-        // Initialize player stats if new player
-        string playerName = PhotonNetwork.LocalPlayer.NickName;
-        if (!playerStats.ContainsKey(playerName)) {
-            playerStats[playerName] = new PlayerStats();
-            photonView.RPC("UpdatePlayerStats", RpcTarget.All, playerName, 0, 0);
-        }
-        
         sceneCamera.enabled = false;
         if (spawnTime == 0) {
-            AddMessage("Player " + playerName + " Joined Game.");
+            AddMessage("Player " + PhotonNetwork.LocalPlayer.NickName + " Joined Game.");
         } else {
-            AddMessage("Player " + playerName + " Respawned.");
+            AddMessage("Player " + PhotonNetwork.LocalPlayer.NickName + " Respawned.");
         }
     }
 
@@ -280,51 +284,90 @@ public class NetworkManager : MonoBehaviourPunCallbacks {
         }
     }
 
-    // Add these methods to update scores and kills
+    // Add this method to handle UI updates
+    private void UpdateUIStats(int score, int kills) {
+        // Ensure UI updates happen on the main thread
+        if (scoreText != null) {
+            scoreText.text = $"Score: {score}";
+            Debug.Log($"Updated score text to: {score}");
+        } else {
+            Debug.LogWarning("scoreText is null!");
+        }
+        
+        if (killsText != null) {
+            killsText.text = $"Kills: {kills}";
+            Debug.Log($"Updated kills text to: {kills}");
+        } else {
+            Debug.LogWarning("killsText is null!");
+        }
+    }
+
     [PunRPC]
-    void UpdatePlayerStats(string playerName, int score, int kills) {
+    private void UpdatePlayerStats_RPC(string playerName, int score, int kills) {
+        Debug.Log($"UpdatePlayerStats_RPC received for {playerName}. Score: {score}, Kills: {kills}");
+        
         if (!playerStats.ContainsKey(playerName)) {
             playerStats[playerName] = new PlayerStats();
         }
         
         playerStats[playerName].Score = score;
         playerStats[playerName].Kills = kills;
-
-        // Update UI if this is the local player and UI elements exist
+        
+        // Update UI for the local player
         if (playerName == PhotonNetwork.LocalPlayer.NickName) {
-            if (scoreText != null) scoreText.text = "Score: " + score;
-            if (killsText != null) killsText.text = "Kills: " + kills;
+            UpdateUIStats(score, kills);
         }
-    }
-
-    public void AddScore(int scoreAmount) {
-        if (!photonView.IsMine) return;
-        
-        string playerName = PhotonNetwork.LocalPlayer.NickName;
-        if (!playerStats.ContainsKey(playerName)) {
-            playerStats[playerName] = new PlayerStats();
-        }
-        
-        playerStats[playerName].Score += scoreAmount;
-        photonView.RPC("UpdatePlayerStats", RpcTarget.All, 
-            playerName, 
-            playerStats[playerName].Score, 
-            playerStats[playerName].Kills);
     }
 
     public void AddKill() {
-        if (!photonView.IsMine) return;
-        
         string playerName = PhotonNetwork.LocalPlayer.NickName;
         if (!playerStats.ContainsKey(playerName)) {
             playerStats[playerName] = new PlayerStats();
         }
         
+        // Update local stats
         playerStats[playerName].Kills++;
-        photonView.RPC("UpdatePlayerStats", RpcTarget.All, 
+        int currentScore = playerStats[playerName].Score + 100; // Add 100 points per kill
+        playerStats[playerName].Score = currentScore;
+        
+        // Debug message
+        Debug.Log($"AddKill called for {playerName}. Kills: {playerStats[playerName].Kills}, Score: {currentScore}");
+        
+        // Send update to all clients
+        photonView.RPC("UpdatePlayerStats_RPC", RpcTarget.All, 
             playerName, 
-            playerStats[playerName].Score, 
+            currentScore, 
             playerStats[playerName].Kills);
+    }
+
+    public void AddScore(int scoreAmount) {
+        string playerName = PhotonNetwork.LocalPlayer.NickName;
+        if (!playerStats.ContainsKey(playerName)) {
+            playerStats[playerName] = new PlayerStats();
+        }
+        
+        // Update local stats
+        int currentScore = playerStats[playerName].Score + scoreAmount;
+        playerStats[playerName].Score = currentScore;
+        
+        // Debug message
+        Debug.Log($"AddScore called for {playerName}. New Score: {currentScore}");
+        
+        // Send update to all clients
+        photonView.RPC("UpdatePlayerStats_RPC", RpcTarget.All, 
+            playerName, 
+            currentScore, 
+            playerStats[playerName].Kills);
+    }
+
+    private void InitializePlayerStats() {
+        string playerName = PhotonNetwork.LocalPlayer.NickName;
+        if (!playerStats.ContainsKey(playerName)) {
+            playerStats[playerName] = new PlayerStats();
+            killStreaks[playerName] = 0;  // Initialize kill streak
+            // Initialize UI with zero values
+            UpdateUIStats(0, 0);
+        }
     }
 
     void Update() {
@@ -520,6 +563,78 @@ public class NetworkManager : MonoBehaviourPunCallbacks {
             if (timerText != null) {
                 timerText.text = FormatTime(currentGameTime);
             }
+        }
+    }
+
+    [PunRPC]
+    private void AddKill_RPC(string killerName) {
+        Debug.Log($"AddKill_RPC called for player: {killerName}");
+        
+        if (!playerStats.ContainsKey(killerName)) {
+            playerStats[killerName] = new PlayerStats();
+        }
+        
+        if (!killStreaks.ContainsKey(killerName)) {
+            killStreaks[killerName] = 0;
+        }
+        
+        // Update kill streak and calculate score
+        killStreaks[killerName]++;
+        int scoreToAdd = CalculateKillScore(killStreaks[killerName]);
+        
+        // Update killer's stats
+        playerStats[killerName].Kills++;
+        int currentScore = playerStats[killerName].Score + scoreToAdd;
+        playerStats[killerName].Score = currentScore;
+        
+        // Add kill streak notification to chat
+        string notification = GetKillStreakNotification(killStreaks[killerName]);
+        if (!string.IsNullOrEmpty(notification)) {
+            AddMessage($"{killerName} - {notification}!");
+        }
+        
+        Debug.Log($"Updated stats for {killerName}: Kills={playerStats[killerName].Kills}, Score={currentScore}, Streak={killStreaks[killerName]}");
+        
+        // Update UI if this is the killer's client
+        if (killerName == PhotonNetwork.LocalPlayer.NickName) {
+            UpdateUIStats(currentScore, playerStats[killerName].Kills);
+        }
+    }
+
+    private int CalculateKillScore(int killStreak) {
+        switch (killStreak) {
+            case 1:
+                return 10;  // First kill
+            case 2:
+                return 15;  // Double kill
+            case 3:
+                return 25;  // Triple kill
+            case 4:
+                return 40;  // Killing spree
+            default:
+                return 60;  // God like
+        }
+    }
+
+    private string GetKillStreakNotification(int killStreak) {
+        switch (killStreak) {
+            case 2:
+                return "Double Kill";
+            case 3:
+                return "Triple Kill";
+            case 4:
+                return "Killing Spree";
+            case 5:
+                return "God Like";
+            default:
+                return null;
+        }
+    }
+
+    // Add this method to reset kill streak when a player dies
+    public void ResetKillStreak(string playerName) {
+        if (killStreaks.ContainsKey(playerName)) {
+            killStreaks[playerName] = 0;
         }
     }
 

@@ -78,7 +78,7 @@ public class FpsGun : MonoBehaviour {
     /// Coroutine function to disable shooting effect.
     /// <summary>
     public IEnumerator DisableShootingEffect() {
-        yield return new WaitForSeconds(0.05f);
+        yield return new WaitForSeconds(0.05f);`
         gunLine.enabled = false;
     }
 
