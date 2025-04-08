@@ -48,5 +48,5 @@
         "temp/": true,
         "Temp/": true
     },
-    "dotnet.defaultSolution": "Multiplayer-FPS.sln"
+    "dotnet.defaultSolution": "Urban-Carnage.sln"
 }
