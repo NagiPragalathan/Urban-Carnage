@@ -3,6 +3,7 @@ using UnityEngine;
 using UnityStandardAssets.CrossPlatformInput;
 using UnityStandardAssets.Characters.FirstPerson;
 using System.Collections;
+using System.Collections.Generic;
 
 [RequireComponent(typeof(FirstPersonController))]
 
@@ -23,6 +24,7 @@ public class PlayerNetworkMover : MonoBehaviourPunCallbacks, IPunObservable {
     private Quaternion rotation;
     private bool jump;
     private float smoothing = 10.0f;
+    private List<GameObject> playersInTrain = new List<GameObject>();
 
     /// <summary>
     /// Move game objects to another layer.
@@ -108,6 +110,71 @@ public class PlayerNetworkMover : MonoBehaviourPunCallbacks, IPunObservable {
         } else {
             position = (Vector3)stream.ReceiveNext();
             rotation = (Quaternion)stream.ReceiveNext();
+        }
+    }
+
+    // When player enters the train
+    void OnTriggerEnter(Collider other)
+    {
+        if (other.CompareTag("Player") && !playersInTrain.Contains(other.gameObject))
+        {
+            // Add player to list of players in train
+            playersInTrain.Add(other.gameObject);
+            
+            // If this is the local player, notify others via RPC
+            PlayerNetworkMover playerMover = other.GetComponent<PlayerNetworkMover>();
+            if (playerMover != null && playerMover.photonView.IsMine)
+            {
+                photonView.RPC("PlayerEnteredTrain_RPC", RpcTarget.Others, playerMover.photonView.ViewID);
+            }
+        }
+    }
+    
+    // When player exits the train
+    void OnTriggerExit(Collider other)
+    {
+        if (other.CompareTag("Player") && playersInTrain.Contains(other.gameObject))
+        {
+            // Remove player from list of players in train
+            playersInTrain.Remove(other.gameObject);
+            
+            // If this is the local player, notify others via RPC
+            PlayerNetworkMover playerMover = other.GetComponent<PlayerNetworkMover>();
+            if (playerMover != null && playerMover.photonView.IsMine)
+            {
+                photonView.RPC("PlayerExitedTrain_RPC", RpcTarget.Others, playerMover.photonView.ViewID);
+            }
+        }
+    }
+    
+    [PunRPC]
+    void PlayerEnteredTrain_RPC(int playerViewID)
+    {
+        PhotonView playerView = PhotonView.Find(playerViewID);
+        if (playerView != null && !playersInTrain.Contains(playerView.gameObject))
+        {
+            playersInTrain.Add(playerView.gameObject);
+        }
+    }
+    
+    [PunRPC]
+    void PlayerExitedTrain_RPC(int playerViewID)
+    {
+        PhotonView playerView = PhotonView.Find(playerViewID);
+        if (playerView != null && playersInTrain.Contains(playerView.gameObject))
+        {
+            playersInTrain.Remove(playerView.gameObject);
+        }
+    }
+
+    [PunRPC]
+    void SyncPositionWithTrain_RPC(Vector3 newPosition)
+    {
+        // Only execute this on non-local players
+        if (!photonView.IsMine)
+        {
+            // Update the position
+            position = newPosition;
         }
     }
 
